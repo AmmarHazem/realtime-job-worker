@@ -10,11 +10,30 @@ services:
   core:
     build: ./core
     container_name: core-service
+    command: ["node", "--watch", "index.ts"]
     ports:
       - "3000:3000"
     environment:
       PORT: 3000
       REDIS_URL: redis://redis:6379
+    volumes:
+      - ./core:/app
+      - /app/node_modules
+    depends_on:
+      - redis
+
+  worker:
+    build: ./worker
+    container_name: worker-service
+    command: ["node", "--watch", "index.ts"]
+    ports:
+      - "3001:3001"
+    environment:
+      PORT: 3001
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - ./worker:/app
+      - /app/node_modules
     depends_on:
       - redis
 
