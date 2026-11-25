@@ -1,4 +1,5 @@
 import express from "express";
+import os from "node:os";
 import { createClient } from "redis";
 
 const app = express();
@@ -10,10 +11,12 @@ const redisClient = createClient({ url: redisUrl });
 
 app.use(express.json());
 
-type JobModel = Record<string, string>;
+type JobModel = { fn: string };
 
 const REDIS_JOBS_STREAM_NAME = "jobs";
 const REDIS_CONSUMER_GROUP_NAME = "job_producer";
+const REDIS_RESULTS_STREAM_NAME = "jobs_results";
+const CONSUMER_NAME = `${os.hostname()}-${process.pid}`;
 
 app.post("/api/jobs", async (req, res) => {
   const job: JobModel = req.body?.job;
@@ -35,11 +38,17 @@ app.get("/api/jobs", async (req, res) => {
   res.json({ jobs });
 });
 
-async function ensureConsumerGroup() {
+async function ensureConsumerGroup({
+  streamName,
+  groupName,
+}: {
+  streamName: string;
+  groupName: string;
+}) {
   try {
     const createConsumerGroupOk = await redisClient.xGroupCreate(
-      REDIS_JOBS_STREAM_NAME,
-      REDIS_CONSUMER_GROUP_NAME,
+      streamName,
+      groupName,
       "$",
       {
         MKSTREAM: true,
@@ -50,19 +59,59 @@ async function ensureConsumerGroup() {
     }
   } catch (e) {
     if (e instanceof Error && e.message?.includes("BUSYGROUP")) {
-      console.log("consumer group already exists");
+      console.log(`consumer group ${groupName} already exists`);
     } else {
       throw e;
     }
   }
 }
 
+async function listenToJobResults() {
+  try {
+    while (true) {
+      const redisResponse = await redisClient.xReadGroup(
+        REDIS_CONSUMER_GROUP_NAME,
+        CONSUMER_NAME,
+        [{ key: REDIS_RESULTS_STREAM_NAME, id: ">" }],
+        {
+          COUNT: 1,
+          BLOCK: 0,
+        },
+      );
+      console.log("core results", redisResponse);
+      if (!redisResponse?.length) continue;
+      for (const stream of redisResponse) {
+        for (const job of stream.messages) {
+          console.log(`Core [${CONSUMER_NAME}] Received:`, typeof job, job);
+          await redisClient.xAck(
+            REDIS_JOBS_STREAM_NAME,
+            REDIS_CONSUMER_GROUP_NAME,
+            job.id,
+          );
+        }
+      }
+    }
+  } catch (e) {
+    console.log("error listening to job results", e);
+  }
+}
+
 async function main() {
   try {
     await redisClient.connect();
-    await ensureConsumerGroup();
+    await Promise.all([
+      ensureConsumerGroup({
+        streamName: REDIS_JOBS_STREAM_NAME,
+        groupName: REDIS_CONSUMER_GROUP_NAME,
+      }),
+      ensureConsumerGroup({
+        streamName: REDIS_RESULTS_STREAM_NAME,
+        groupName: REDIS_CONSUMER_GROUP_NAME,
+      }),
+    ]);
     app.listen(port, async () => {
-      console.log(`listening on port ${port}`);
+      console.log(`listening on port ${port}-`);
+      listenToJobResults();
     });
   } catch (e) {
     console.log("main error", e);

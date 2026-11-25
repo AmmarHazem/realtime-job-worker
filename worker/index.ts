@@ -13,9 +13,10 @@ app.use(express.json());
 
 const REDIS_JOBS_STREAM_NAME = "jobs";
 const REDIS_CONSUMER_GROUP_NAME = "job_consumer";
+const REDIS_RESULTS_STREAM_NAME = "jobs_results";
 const CONSUMER_NAME = `${os.hostname()}-${process.pid}`;
 
-async function ensureConsumerGroup() {
+async function ensureJobsConsumerGroup() {
   try {
     const createConsumerGroupOk = await redisClient.xGroupCreate(
       REDIS_JOBS_STREAM_NAME,
@@ -37,6 +38,43 @@ async function ensureConsumerGroup() {
   }
 }
 
+async function reportJobResult({
+  id,
+  status,
+  result,
+}: {
+  id: string;
+  result: never;
+  status: "done" | "failed";
+}) {
+  try {
+    await redisClient.xAdd(REDIS_RESULTS_STREAM_NAME, id, {
+      id,
+      status,
+      result: result ?? "",
+    });
+  } catch (e) {
+    console.log("error reporting job", e);
+  }
+}
+
+async function executeJob({ job, id }: { job: string; id: string }) {
+  let result = null;
+  try {
+    result = await eval(job);
+  } catch (e) {
+    console.log(`failed to process job ${id}: ${job}`);
+    result = null;
+  } finally {
+    await reportJobResult({
+      id,
+      result: result as never,
+      status: result ? "done" : "failed",
+    });
+    return result;
+  }
+}
+
 async function startProcessingJobs() {
   while (true) {
     try {
@@ -51,12 +89,16 @@ async function startProcessingJobs() {
       );
       if (!redisResponse?.length) continue;
       for (const stream of redisResponse) {
-        for (const message of stream.messages) {
-          console.log(`[${CONSUMER_NAME}] Received:`, message);
+        for (const job of stream.messages) {
+          console.log(`Worker [${CONSUMER_NAME}] Received:`, typeof job, job);
+          await executeJob({
+            job: job.message.fn,
+            id: job.id,
+          });
           await redisClient.xAck(
             REDIS_JOBS_STREAM_NAME,
             REDIS_CONSUMER_GROUP_NAME,
-            message.id,
+            job.id,
           );
         }
       }
@@ -69,7 +111,7 @@ async function startProcessingJobs() {
 async function main() {
   try {
     await redisClient.connect();
-    await ensureConsumerGroup();
+    await ensureJobsConsumerGroup();
     app.listen(port, async () => {
       console.log(`listening on port ${port}`);
       startProcessingJobs();
