@@ -68,8 +68,10 @@ async function ensureConsumerGroup({
 
 async function listenToJobResults() {
   try {
+    const newClient = redisClient.duplicate();
+    await newClient.connect();
     while (true) {
-      const redisResponse = await redisClient.xReadGroup(
+      const redisResponse = await newClient.xReadGroup(
         REDIS_CONSUMER_GROUP_NAME,
         CONSUMER_NAME,
         [{ key: REDIS_RESULTS_STREAM_NAME, id: ">" }],
@@ -84,7 +86,7 @@ async function listenToJobResults() {
         for (const job of stream.messages) {
           console.log(`Core [${CONSUMER_NAME}] Received:`, typeof job, job);
           await redisClient.xAck(
-            REDIS_JOBS_STREAM_NAME,
+            REDIS_RESULTS_STREAM_NAME,
             REDIS_CONSUMER_GROUP_NAME,
             job.id,
           );
@@ -110,7 +112,7 @@ async function main() {
       }),
     ]);
     app.listen(port, async () => {
-      console.log(`listening on port ${port}-`);
+      console.log(`listening on port ${port}`);
       listenToJobResults();
     });
   } catch (e) {

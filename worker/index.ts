@@ -62,15 +62,20 @@ async function executeJob({ job, id }: { job: string; id: string }) {
   let result = null;
   try {
     result = await eval(job);
-  } catch (e) {
-    console.log(`failed to process job ${id}: ${job}`);
-    result = null;
-  } finally {
     await reportJobResult({
       id,
       result: result as never,
-      status: result ? "done" : "failed",
+      status: "done",
     });
+  } catch (e) {
+    console.log(`failed to process job ${id}: ${job}`);
+    result = null;
+    await reportJobResult({
+      id,
+      result: result as never,
+      status: "failed",
+    });
+  } finally {
     return result;
   }
 }
